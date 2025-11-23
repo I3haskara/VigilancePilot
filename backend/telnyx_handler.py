@@ -33,25 +33,24 @@ class TelnyxHandler:
         child_id: str,
         risk_level: str
     ) -> Dict[str, Any]:
-        """Send SMS alert to parent"""
+        """Send SMS alert to parent (async via thread)"""
         if not self.api_key:
             logger.warning("Telnyx not configured - SMS not sent")
             return {"status": "skipped", "reason": "not_configured"}
-        
         try:
-            response = telnyx.Message.create(
+            import asyncio
+            response = await asyncio.to_thread(
+                telnyx.Message.create,
                 from_=self.phone_number,
                 to=to_phone,
                 text=message
             )
-            
             logger.info(f"SMS alert sent to {to_phone} for child {child_id}")
             return {
                 "status": "sent",
                 "message_id": response.id,
                 "to": to_phone
             }
-            
         except Exception as e:
             logger.error(f"Failed to send SMS: {e}")
             return {"status": "failed", "error": str(e)}
@@ -62,26 +61,25 @@ class TelnyxHandler:
         child_id: str,
         risk_level: str
     ) -> Dict[str, Any]:
-        """Initiate voice call to parent"""
+        """Initiate voice call to parent (async via thread)"""
         if not self.api_key or not self.connection_id:
             logger.warning("Telnyx not configured - call not initiated")
             return {"status": "skipped", "reason": "not_configured"}
-        
         try:
-            call = telnyx.Call.create(
+            import asyncio
+            call = await asyncio.to_thread(
+                telnyx.Call.create,
                 connection_id=self.connection_id,
                 to=to_phone,
                 from_=self.phone_number,
                 webhook_url=os.getenv("TELNYX_WEBHOOK_URL")
             )
-            
             logger.info(f"Call initiated to {to_phone} for child {child_id}")
             return {
                 "status": "initiated",
                 "call_id": call.call_control_id,
                 "to": to_phone
             }
-            
         except Exception as e:
             logger.error(f"Failed to initiate call: {e}")
             return {"status": "failed", "error": str(e)}

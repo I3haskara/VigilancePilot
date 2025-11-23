@@ -1,11 +1,14 @@
+
+import httpx
+import json
+import os
 from typing import Dict, List, Any
-def _call_agi_api(message_text: str) -> Dict[str, Any]:
+import logging
+import asyncio
+
+async def _call_agi_api(message_text: str) -> Dict[str, Any]:
     """
-    Call AGI session API:
-    1. Create a session
-    2. Send a message
-    3. Read assistant response
-    4. Return normalized risk payload
+    Async AGI session API call using httpx
     """
     AGI_BASE_URL = os.getenv("AGI_BASE_URL", "https://api.agi.tech/v1")
     AGI_API_KEY = os.getenv("AGI_API_KEY")
@@ -16,57 +19,53 @@ def _call_agi_api(message_text: str) -> Dict[str, Any]:
         "Content-Type": "application/json",
     }
     try:
-        # 1) Create session
-        import requests
-        create_resp = requests.post(
-            f"{AGI_BASE_URL}/sessions",
-            headers=headers,
-            json={"name": "vigilancepilot-session"},
-            timeout=20,
-        )
-        create_resp.raise_for_status()
-        session_id = create_resp.json()["id"]
-        # 2) Send message
-        send_resp = requests.post(
-            f"{AGI_BASE_URL}/sessions/{session_id}/message",
-            headers=headers,
-            json={"message": message_text},
-            timeout=30,
-        )
-        send_resp.raise_for_status()
-        # 3) Fetch messages
-        msgs_resp = requests.get(
-            f"{AGI_BASE_URL}/sessions/{session_id}/messages",
-            headers=headers,
-            params={"after_id": 0},
-            timeout=30,
-        )
-        msgs_resp.raise_for_status()
-        data = msgs_resp.json()
-        messages: List[Dict[str, Any]] = data.get("messages") or data.get("data") or []
-        if not messages:
-            raise AgiUnavailable("No messages returned from AGI")
-        # Prefer last assistant message
-        assistant_msg = next(
-            (m for m in reversed(messages) if m.get("role") == "assistant"),
-            messages[-1],
-        )
-        content = assistant_msg.get("content") or assistant_msg.get("message") or ""
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            parsed = {
-                "risk_level": "unknown",
-                "risk_score": 0,
-                "categories_detected": [],
-                "ai_reasoning": content,
+        async with httpx.AsyncClient(timeout=30) as client:
+            # 1) Create session
+            create_resp = await client.post(
+                f"{AGI_BASE_URL}/sessions",
+                headers=headers,
+                json={"name": "vigilancepilot-session"}
+            )
+            create_resp.raise_for_status()
+            session_id = create_resp.json()["id"]
+            # 2) Send message
+            send_resp = await client.post(
+                f"{AGI_BASE_URL}/sessions/{session_id}/message",
+                headers=headers,
+                json={"message": message_text}
+            )
+            send_resp.raise_for_status()
+            # 3) Fetch messages
+            msgs_resp = await client.get(
+                f"{AGI_BASE_URL}/sessions/{session_id}/messages",
+                headers=headers,
+                params={"after_id": 0}
+            )
+            msgs_resp.raise_for_status()
+            data = msgs_resp.json()
+            messages: List[Dict[str, Any]] = data.get("messages") or data.get("data") or []
+            if not messages:
+                raise AgiUnavailable("No messages returned from AGI")
+            assistant_msg = next(
+                (m for m in reversed(messages) if m.get("role") == "assistant"),
+                messages[-1],
+            )
+            content = assistant_msg.get("content") or assistant_msg.get("message") or ""
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = {
+                    "risk_level": "unknown",
+                    "risk_score": 0,
+                    "categories_detected": [],
+                    "ai_reasoning": content,
+                }
+            return {
+                "risk_level": parsed.get("risk_level", "unknown"),
+                "risk_score": parsed.get("risk_score", 0),
+                "categories_detected": parsed.get("categories_detected", []),
+                "ai_reasoning": parsed.get("ai_reasoning", content),
             }
-        return {
-            "risk_level": parsed.get("risk_level", "unknown"),
-            "risk_score": parsed.get("risk_score", 0),
-            "categories_detected": parsed.get("categories_detected", []),
-            "ai_reasoning": parsed.get("ai_reasoning", content),
-        }
     except Exception as e:
         logger.exception("AGI request failed")
         raise AgiUnavailable(str(e)) from e
@@ -120,11 +119,11 @@ class AGIScorer:
         self.history = {}
         self.max_history_per_child = 1000
 
-    def score_message(self, message_text: str) -> Dict[str, Any]:
+    async def score_message(self, message_text: str) -> Dict[str, Any]:
         """
         Score a message using AGI API and return normalized risk dict.
         """
-        return _call_agi_api(message_text)
+        return await _call_agi_api(message_text)
 
     async def analyze_message(self, message: str, history: List[Dict] = None) -> ScoreResponse:
         """
