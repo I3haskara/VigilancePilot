@@ -1,45 +1,63 @@
+from backend.handle_telnyx_webhook import handle_telnyx_webhook
+"""
+VigilancePilot FastAPI Backend - Child Safety Monitoring
+Main application entry point
+"""
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import logging
+from typing import Dict, Any, List
+import os
+from datetime import datetime
+import asyncio
 
+from backend.models import (
+    MessageAnalysisRequest,
+    MessageAnalysisResponse,
+    BatchAnalysisRequest,
+    AlertConfig,
+    HealthCheck,
+    WebhookEvent,
+)
+from backend.agi_scorer import AGIScorer
+from backend.agi_score import sync_score_message
+from backend.telnyx_handler import TelnyxHandler
+from backend.rule_engine import RuleEngine
 
-from fastapi import FastAPI
-from backend.models import MessageAnalysisRequest, MessageAnalysisResponse
-from backend.risk_aggregator import run_full_analysis
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="VigilancePilot API")
-
-@app.post("/api/analyze", response_model=MessageAnalysisResponse)
-async def api_analyze(request: MessageAnalysisRequest):
-    result = run_full_analysis(request.dict())
-    return result
-
+# Global instances
+agi_scorer: AGIScorer = None
+telnyx_handler: TelnyxHandler = None
+active_websockets: List[WebSocket] = []
+rule_engine = RuleEngine()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
     global agi_scorer, telnyx_handler
-    
     # Startup
     logger.info("🚀 Starting VigilancePilot Backend...")
     agi_scorer = AGIScorer()
     await agi_scorer.initialize()
-    
     telnyx_handler = TelnyxHandler()
-    
     logger.info("✅ VigilancePilot ready for child safety monitoring")
-    
     yield
-    
     # Shutdown
-
     logger.info("🛑 Shutting down VigilancePilot...")
     if agi_scorer:
         await agi_scorer.cleanup()
-
 
 # Synchronous scoring function wrapper
 def sync_scoring(message_content: str):
     # The actual synchronous AGI/Minimax call goes here
     return sync_score_message(message_content)
-
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -58,7 +76,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 async def root():
     """Root endpoint - API information"""
@@ -75,39 +92,22 @@ async def root():
         }
     }
 
-
 @app.get("/health", response_model=HealthCheck)
 async def health_check():
     """Health check endpoint"""
     agi_ready = await agi_scorer.check_health() if agi_scorer else False
     telnyx_ready = bool(telnyx_handler and telnyx_handler.api_key)
-    
     return HealthCheck(
         status="healthy" if (agi_ready or telnyx_ready) else "degraded",
         agi_api_ready=agi_ready,
         telnyx_ready=telnyx_ready,
         version="1.0.0"
-
     )
-
-
-@app.get("/")
-async def read_root():
-    return {"status": "VigilancePilot is running and ready for webhooks!"}
-
-
 
 @app.post("/api/analyze", response_model=MessageAnalysisResponse)
 async def analyze_message(req: MessageAnalysisRequest):
-    """
-    FLOW:
-      1. Call risk engine / agi_scorer with the request.
-      2. Build MessageAnalysisResponse.
-      3. If risk_level is "medium" or "high", trigger Telnyx SMS.
-    """
     try:
         logger.info(f"Analyzing message from child_id: {req.child_id}")
-        # 1. Call risk engine
         result = await agi_scorer.analyze_message(
             message=req.message,
             context=req.context,
@@ -115,34 +115,19 @@ async def analyze_message(req: MessageAnalysisRequest):
             platform=req.platform
         )
         logger.info(f"Analysis complete - Risk: {result.risk_level} ({result.risk_score}/100)")
-
-        # 2. If risk_level is medium/high, trigger Telnyx SMS
         if result.risk_level in {"medium", "high"}:
-            from send_parent_alert_sms import send_parent_alert_sms
+            from backend.send_parent_alert_sms import send_parent_alert_sms
             await send_parent_alert_sms(result.model_dump())
-
-        # Broadcast to websocket clients
         await _broadcast_alert(result)
         return result
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-
 @app.post("/api/batch-analyze", response_model=List[MessageAnalysisResponse])
 async def batch_analyze(request: BatchAnalysisRequest):
-    """
-    Analyze multiple messages in batch
-    
-    Args:
-        request: Batch analysis request with list of messages
-    
-    Returns:
-        List of analysis results
-    """
     try:
         logger.info(f"Batch analyzing {len(request.messages)} messages")
-        
         results = []
         for msg_request in request.messages:
             result = await agi_scorer.analyze_message(
@@ -152,63 +137,31 @@ async def batch_analyze(request: BatchAnalysisRequest):
                 platform=msg_request.platform
             )
             results.append(result)
-        
         logger.info(f"Batch analysis complete: {len(results)} results")
         return results
-        
     except Exception as e:
         logger.error(f"Batch analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Batch analysis failed: {str(e)}")
 
-
 @app.post("/webhooks/telnyx")
 async def telnyx_webhook(event: WebhookEvent):
-    """
-    Handle Telnyx webhook events
-    
-    Args:
-        event: Telnyx webhook event data
-    
-    Returns:
-        Acknowledgment
-    """
     try:
-
         logger.info(f"Received Telnyx webhook: {event.event_type}")
-
-        # Extract message content from event (adjust key as needed)
         message_content = event.dict().get("message_content")
-
-        # --- THE ASYNCHRONOUS FIX ---
         loop = asyncio.get_event_loop()
         risk_score = await loop.run_in_executor(
-            None,                        # Use default ThreadPoolExecutor
-            sync_scoring,                # The synchronous wrapper function
-            message_content              # The message content argument
+            None,
+            sync_scoring,
+            message_content
         )
-        # -----------------------------
-
-        # Optionally, handle webhook and combine results
         webhook_result = await telnyx_handler.handle_webhook(event.dict())
-
         return {"status": "received", "risk_score": risk_score, "webhook_result": webhook_result}
-        
     except Exception as e:
         logger.error(f"Webhook handling failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Webhook failed: {str(e)}")
 
-
 @app.post("/api/alert/configure")
 async def configure_alert(config: AlertConfig):
-    """
-    Configure alert settings for a child
-    
-    Args:
-        config: Alert configuration with thresholds and notification preferences
-    
-    Returns:
-        Confirmation
-    """
     try:
         agi_scorer.configure_alert(config)
         return {
@@ -216,24 +169,12 @@ async def configure_alert(config: AlertConfig):
             "child_id": config.child_id,
             "alert_threshold": config.alert_threshold
         }
-        
     except Exception as e:
         logger.error(f"Alert configuration failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/history/{child_id}")
 async def get_history(child_id: str, limit: int = 50):
-    """
-    Get analysis history for a child
-    
-    Args:
-        child_id: Child identifier
-        limit: Maximum number of results
-    
-    Returns:
-        List of historical analyses
-    """
     try:
         history = await agi_scorer.get_history(child_id, limit)
         return {
@@ -241,35 +182,25 @@ async def get_history(child_id: str, limit: int = 50):
             "count": len(history),
             "history": history
         }
-        
     except Exception as e:
         logger.error(f"History retrieval failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.websocket("/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time alerts
-    """
     await websocket.accept()
     active_websockets.append(websocket)
-    
     try:
         while True:
-            # Keep connection alive
             data = await websocket.receive_text()
             await websocket.send_json({"status": "connected"})
-            
     except WebSocketDisconnect:
         active_websockets.remove(websocket)
         logger.info("WebSocket client disconnected")
 
-
 @app.post("/CIL/VigilancePilot/telnyx_webhook")
 async def handle_telnyx_webhook(request: Request):
     payload = await request.json()
-    # Example: analyze message and score
     message = payload.get("message", "")
     rules = rule_engine.apply_rules(message)
     ai_result = await agi_scorer.score_message(message)
@@ -280,9 +211,7 @@ async def handle_telnyx_webhook(request: Request):
         "webhook_status": "processed"
     }
 
-
 async def _send_alert(config: AlertConfig, result: MessageAnalysisResponse):
-    """Send alert to parent via configured methods"""
     message = f"""
 ⚠️ VIGILANCEPILOT ALERT
 
@@ -300,7 +229,6 @@ AI Analysis: {result.ai_reasoning}
 
 Please review your child's messages immediately.
 """
-    
     if "sms" in config.notification_methods:
         await telnyx_handler.send_alert_sms(
             to_phone=config.parent_phone,
@@ -308,7 +236,6 @@ Please review your child's messages immediately.
             child_id=result.child_id,
             risk_level=result.risk_level
         )
-    
     if "call" in config.notification_methods and result.risk_level in ["high", "danger"]:
         await telnyx_handler.initiate_alert_call(
             to_phone=config.parent_phone,
@@ -316,24 +243,19 @@ Please review your child's messages immediately.
             risk_level=result.risk_level
         )
 
-
 async def _broadcast_alert(result: MessageAnalysisResponse):
-    """Broadcast alert to connected WebSocket clients"""
     if not active_websockets:
         return
-    
     message = {
         "type": "alert",
         "data": result.dict()
     }
-    
     for websocket in active_websockets[:]:
         try:
             await websocket.send_json(message)
         except Exception as e:
             logger.error(f"Failed to send WebSocket message: {e}")
             active_websockets.remove(websocket)
-
 
 if __name__ == "__main__":
     import uvicorn

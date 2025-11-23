@@ -31,32 +31,26 @@ class ScoreResponse(BaseModel):
 """
 Pydantic Models for VigilancePilot Child Safety Monitoring
 """
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
-from datetime import datetime
 
+from pydantic import BaseModel
+from typing import Any, Dict, Optional
 
 class MessageAnalysisRequest(BaseModel):
-    """Request model for message analysis"""
-    message: str = Field(..., description="The message content to analyze")
-    child_id: str = Field(..., description="Unique identifier for the child")
-    platform: str = Field(..., description="Platform where message was sent (SMS, WhatsApp, Instagram, etc.)")
-    context: Optional[Dict[str, Any]] = Field(default=None, description="Additional context (sender info, thread, etc.)")
-    timestamp: Optional[str] = Field(default=None, description="Message timestamp")
-
+    message: str
+    child_id: str
+    platform: str
+    context: Optional[Dict[str, Any]] = None
+    timestamp: Optional[str] = None
+    conversation_id: Optional[str] = None
 
 class MessageAnalysisResponse(BaseModel):
-    """Response model for message analysis"""
-    child_id: str = Field(..., description="Child identifier")
-    platform: str = Field(..., description="Platform")
-    risk_level: str = Field(..., description="Risk level: safe, low, medium, high, danger")
-    risk_score: float = Field(..., ge=0, le=100, description="Risk score 0-100")
-    categories_detected: List[str] = Field(default_factory=list, description="Risk categories detected")
-    threat_indicators: List[str] = Field(default_factory=list, description="Specific threat indicators found")
-    ai_reasoning: str = Field(..., description="AI explanation of the analysis")
-    confidence_score: float = Field(..., ge=0, le=100, description="Confidence in the analysis")
-    recommended_action: str = Field(..., description="Recommended action: log_only, notify_parent, alert_urgent, block_contact")
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    child_id: str
+    platform: str
+    risk_level: str          # "low" | "medium" | "high"
+    risk_score: float        # 0–1 or 0–100
+    rule_hits: list[str] = []   # which patterns fired
+    agi_reason: str          # short explanation
+    timestamp: Optional[str] = None
 
 
 class BatchAnalysisRequest(BaseModel):

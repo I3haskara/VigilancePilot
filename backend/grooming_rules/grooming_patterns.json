@@ -1,0 +1,19 @@
+{
+  "tactics": [
+    {
+      "id": "secrecy_explicit",
+      "name": "Explicit secrecy",
+      "weight": 35,
+      "keywords": ["don't tell", "our secret", "keep this secret"],
+      "severity": "high"
+    },
+    {
+      "id": "age_probing",
+      "name": "Age probing",
+      "weight": 10,
+      "keywords": ["how old", "age", "what grade"],
+      "severity": "low"
+    }
+    // Add more tactics as needed
+  ]
+}

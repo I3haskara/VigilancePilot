@@ -25,21 +25,23 @@ class RuleEngine:
         timestamp: str = None,
         conversation_id: str = None,
         **kwargs
-    ):
+    ) -> dict:
         """
-        Analyze a message for grooming risk using AGI LLM scorer.
-        Extra fields are accepted but ignored.
+        Analyze a message for grooming risk using rule patterns.
+        Returns a dict compatible with risk_aggregator.py contract.
         """
-        # Example: If you have a model, use it here
-        if hasattr(self, 'model') and hasattr(self.model, 'predict'):
-            result = self.model.predict({
-                "message": message,
-                "platform": platform,
-                "child_id": child_id
-            })
-            return result
-        # Otherwise, fallback to rule-based analysis
-        return self.analyze(message)
+        result = self.analyze(message)
+        # Normalize output for risk_aggregator.py
+        return {
+            "risk_score": float(result.get("score", 0.0)),
+            "risk_level": (
+                "high" if result.get("score", 0.0) >= 75 else
+                "medium" if result.get("score", 0.0) >= 40 else
+                "low"
+            ),
+            "matched_patterns": result.get("triggered_rules", []),
+            "reason": ", ".join([d.get("name", "") for d in result.get("rule_details", []) if d.get("name")]),
+        }
 
     def _load_grooming_patterns(self) -> List[Dict]:
         """Load grooming patterns from JSON file"""

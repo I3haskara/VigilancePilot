@@ -1,74 +1,81 @@
-
-import httpx
-import json
 import os
-from typing import Dict, List, Any
-import logging
-import asyncio
+import httpx
 
-async def _call_agi_api(message_text: str) -> Dict[str, Any]:
+AGI_API_KEY = os.getenv("AGI_API_KEY")
+AGI_ASSISTANT_ID = os.getenv("AGI_ASSISTANT_ID")
+
+
+class AGIScorer:
     """
-    Async AGI session API call using httpx
+    Handles sending text to AGI.tech, receiving analysis,
+    and normalizing the output into a structured risk result.
     """
-    AGI_BASE_URL = os.getenv("AGI_BASE_URL", "https://api.agi.tech/v1")
-    AGI_API_KEY = os.getenv("AGI_API_KEY")
-    if not AGI_API_KEY:
-        raise AgiUnavailable("AGI_API_KEY is not set")
-    headers = {
-        "Authorization": f"Bearer {AGI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
+
+    def __init__(self):
+        if not AGI_API_KEY:
+            raise ValueError("Missing AGI_API_KEY in environment variables")
+
+        if not AGI_ASSISTANT_ID:
+            raise ValueError("Missing AGI_ASSISTANT_ID in environment variables")
+
+        self.base_url = "https://api.agi.tech/v1"
+
+    async def analyze_text(self, text: str) -> dict:
+        """
+        Sends the message to AGI.tech and retrieves structured analysis.
+        """
+        url = f"{self.base_url}/assistants/{AGI_ASSISTANT_ID}/messages"
+
+        headers = {
+            "Authorization": f"Bearer {AGI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "messages": [{"role": "user", "content": text}],
+            "stream": False,
+        }
+
         async with httpx.AsyncClient(timeout=30) as client:
-            # 1) Create session
-            create_resp = await client.post(
-                f"{AGI_BASE_URL}/sessions",
-                headers=headers,
-                json={"name": "vigilancepilot-session"}
-            )
-            create_resp.raise_for_status()
-            session_id = create_resp.json()["id"]
-            # 2) Send message
-            send_resp = await client.post(
-                f"{AGI_BASE_URL}/sessions/{session_id}/message",
-                headers=headers,
-                json={"message": message_text}
-            )
-            send_resp.raise_for_status()
-            # 3) Fetch messages
-            msgs_resp = await client.get(
-                f"{AGI_BASE_URL}/sessions/{session_id}/messages",
-                headers=headers,
-                params={"after_id": 0}
-            )
-            msgs_resp.raise_for_status()
-            data = msgs_resp.json()
-            messages: List[Dict[str, Any]] = data.get("messages") or data.get("data") or []
-            if not messages:
-                raise AgiUnavailable("No messages returned from AGI")
-            assistant_msg = next(
-                (m for m in reversed(messages) if m.get("role") == "assistant"),
-                messages[-1],
-            )
-            content = assistant_msg.get("content") or assistant_msg.get("message") or ""
-            try:
-                parsed = json.loads(content)
-            except json.JSONDecodeError:
-                parsed = {
-                    "risk_level": "unknown",
-                    "risk_score": 0,
-                    "categories_detected": [],
-                    "ai_reasoning": content,
-                }
-            return {
-                "risk_level": parsed.get("risk_level", "unknown"),
-                "risk_score": parsed.get("risk_score", 0),
-                "categories_detected": parsed.get("categories_detected", []),
-                "ai_reasoning": parsed.get("ai_reasoning", content),
-            }
-    except Exception as e:
-        logger.exception("AGI request failed")
-        raise AgiUnavailable(str(e)) from e
+            response = await client.post(url, json=payload, headers=headers)
+
+        response.raise_for_status()
+        raw = response.json()
+        return self._normalize_response(raw)
+
+    def _normalize_response(self, raw: dict) -> dict:
+        """
+        Convert AGI output into our standardized result format.
+        """
+        try:
+            content = raw["messages"][0]["content"]
+        except Exception:
+            content = "Could not extract content"
+
+        return {
+            "agi_raw": raw,
+            "agi_summary": content,
+            "risk_score": self._compute_risk(content),
+        }
+
+    def _compute_risk(self, text: str) -> int:
+        """
+        Converts AGI summary into a simple threat score.
+        This will later merge with heuristic scoring.
+        """
+        text = text.lower()
+
+        high_risk_terms = ["grooming", "sexual", "meet up", "secret", "don't tell"]
+        medium_terms = ["alone", "private", "location"]
+
+        score = 0
+
+        if any(t in text for t in high_risk_terms):
+            score += 70
+        if any(t in text for t in medium_terms):
+            score += 30
+
+        return min(score, 100)
 """
 AGI Browser Agent Integration (Session-Based API)
 """
@@ -118,34 +125,123 @@ class AGIScorer:
         self.alert_configs = {}
         self.history = {}
         self.max_history_per_child = 1000
+            # Keep this empty for now. Later you can add:
+            # - API keys
+            # - base_url
+            # - httpx.Client, etc.
 
+        def analyze_message(
+            self,
+            message: str,
+            child_id: Optional[str] = None,
+            platform: Optional[str] = None,
+            context: Optional[Dict[str, Any]] = None,
+            timestamp: Optional[str] = None,
+            conversation_id: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            """
+            Analyze a message and return a normalized risk dict.
+
+            Returns:
+                {
+                    "risk_score": float (0–100),
+                    "risk_level": "low" | "medium" | "high",
+                    "reason": str,
+                    "message": str,
+                    "child_id": Optional[str],
+                    "platform": Optional[str],
+                    "context": dict,
+                    "timestamp": Optional[str],
+                    "conversation_id": Optional[str],
+                }
+            """
+            text = (message or "").lower()
+            context = context or {}
+
+            # ---- baseline ----
+            score: float = 5.0
+            reasons = []
+
+            # ---- simple heuristic patterns ----
+            patterns = [
+                ("keep this secret", 85, "Asking the child to keep secrets"),
+                ("don't tell your parents", 90, "Discouraging disclosure to parents"),
+                ("dont tell your parents", 90, "Discouraging disclosure to parents"),
+                ("meet you alone", 80, "Request to meet alone"),
+                ("meet alone", 75, "Request to meet alone"),
+                ("come over when your parents are out", 90, "Request to meet unsupervised"),
+                ("send me a picture", 70, "Request for pictures"),
+                ("send me a pic", 70, "Request for pictures"),
+                ("delete this chat", 75, "Request to hide the conversation"),
+                ("this is our little secret", 90, "Secret-keeping language"),
+            ]
+
+            for phrase, extra_score, why in patterns:
+                if phrase in text:
+                    score = max(score, extra_score)
+                    reasons.append(why)
+
+            # Slightly more generic heuristic
+            if "meet" in text and "alone" in text:
+                score = max(score, 65)
+                reasons.append("Mentions of meeting alone")
+
+            # Clamp to [0, 100]
+            score = max(0.0, min(100.0, float(score)))
+
+            # ---- map score → level ----
+            if score >= 75.0:
+                level = "high"
+            elif score >= 40.0:
+                level = "medium"
+            else:
+                level = "low"
+
+            if not reasons:
+                reasons.append(
+                    "No explicit grooming language detected. Baseline low risk only."
+                )
+
+            return {
+                "risk_score": score,
+                "risk_level": level,
+                "reason": "; ".join(reasons),
+                "message": message,
+                "child_id": child_id,
+                "platform": platform,
+                "context": context,
+                "timestamp": timestamp,
+                "conversation_id": conversation_id,
+            }
     async def score_message(self, message_text: str) -> Dict[str, Any]:
         """
         Score a message using AGI API and return normalized risk dict.
         """
         return await _call_agi_api(message_text)
 
-    async def analyze_message(self, message: str, history: List[Dict] = None) -> ScoreResponse:
+    def analyze_message(
+        self,
+        message: str,
+        child_id: str,
+        platform: str,
+    ) -> dict:
         """
-        HYBRID ANALYSIS: Rule engine + AGI API
+        Minimal, stable contract for AGI risk scoring.
+        Only message + metadata it actually uses.
         """
-        history = history or []
-        # Initialize rule engine if not exists
-        if not hasattr(self, 'rule_engine'):
-            self.rule_engine = RuleEngine()
-            logger.info("✅ Rule engine initialized")
-        try:
-            # STEP 1: Rule-based analysis (always works)
-            rule_result = self.rule_engine.analyze(message, history)
-            rule_score = rule_result["score"]
-            triggered_rules = rule_result["triggered_rules"]
-            logger.info(f"📊 Rule score: {rule_score}, Flags: {triggered_rules}")
-            # STEP 2: Try AGI API (fallback if fails)
-            try:
-                session_id = await self._ensure_session()
-                prompt = self._build_grooming_prompt(message)
-                agi_response = await self._send_message(session_id, prompt)
-                parsed = self._parse_agi_response(agi_response)
+        # Example — replace with your real AGI call
+        result = self.model.predict({
+            "message": message,
+            "child_id": child_id,
+            "platform": platform,
+        })
+
+        # Normalise into a dict with clear keys
+        return {
+            "risk_score": float(result["risk_score"]),
+            "risk_level": result.get("risk_level", "unknown"),
+            "reason": result.get("reason", ""),
+        }
                 agi_score = parsed.get("risk_score", rule_score) * 10  # Convert 0-10 to 0-100
             except Exception as e:
                 logger.warning(f"⚠️  AGI API unavailable, using rule-only: {e}")

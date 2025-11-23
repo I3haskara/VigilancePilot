@@ -4,18 +4,18 @@ Redis and RedisVL client for vector storage and similarity search.
 
 from typing import List, Dict, Any, Optional
 import json
-import redis
+...existing code...
 
 try:
-    from redis.commands.search.field import TextField, VectorField
-    from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-    from redis.commands.search.query import Query
+    ...existing code...
+    ...existing code...
+    ...existing code...
     REDIS_SEARCH_AVAILABLE = True
 except ImportError:
     REDIS_SEARCH_AVAILABLE = False
 
 
-class RedisClient:
+...existing code...
     """
     Client for Redis operations including vector similarity search via RedisVL.
     """
