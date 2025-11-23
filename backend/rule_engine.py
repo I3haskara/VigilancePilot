@@ -2,31 +2,55 @@
 Rule-Based Grooming Detection Engine
 Fast pattern matching for known grooming tactics
 """
-import re
+import os
 import json
+import re
 from typing import List, Dict, Tuple
-from pathlib import Path
 
 
 class RuleEngine:
     """Pattern-based grooming detection using clinically validated indicators"""
-    
+
     def __init__(self):
         """Initialize with grooming patterns"""
         self.rules = self._load_grooming_patterns()
         self._compile_patterns()
-        
+
+    def analyze_message(
+        self,
+        message: str,
+        child_id: str = None,
+        platform: str = None,
+        context: dict = None,
+        timestamp: str = None,
+        conversation_id: str = None,
+        **kwargs
+    ):
+        """
+        Analyze a message for grooming risk using AGI LLM scorer.
+        Extra fields are accepted but ignored.
+        """
+        # Example: If you have a model, use it here
+        if hasattr(self, 'model') and hasattr(self.model, 'predict'):
+            result = self.model.predict({
+                "message": message,
+                "platform": platform,
+                "child_id": child_id
+            })
+            return result
+        # Otherwise, fallback to rule-based analysis
+        return self.analyze(message)
+
     def _load_grooming_patterns(self) -> List[Dict]:
         """Load grooming patterns from JSON file"""
         try:
-            pattern_file = Path(__file__).parent / "grooming_patterns.json"
-            if pattern_file.exists():
-                with open(pattern_file, 'r') as f:
-                    data = json.load(f)
-                    return data.get("tactics", [])
+            BASE_DIR = os.path.dirname(__file__)
+            PATTERNS_PATH = os.path.join(BASE_DIR, "grooming_rules", "grooming_patterns.json")
+            with open(PATTERNS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("tactics", [])
         except Exception as e:
             print(f"Warning: Could not load grooming_patterns.json: {e}")
-        
         # Fallback to hardcoded patterns
         return self._get_default_patterns()
     
@@ -150,28 +174,3 @@ if __name__ == "__main__":
         print(f"\nMessage: {msg}")
         print(f"Score: {result['score']}")
         print(f"Triggered: {result['triggered_rules']}")
-# VigilancePilot Rule Engine
-# This module provides functions for loading and applying grooming detection rules.
-
-import json
-import re
-from typing import List, Dict, Any
-
-class RuleEngine:
-    def __init__(self, rules_path: str = "grooming_patterns.json"):
-        with open(rules_path, 'r', encoding='utf-8') as f:
-            self.rules = json.load(f)
-
-    def analyze(self, message: str, history: List[Dict] = None) -> Dict[str, Any]:
-        history = history or []
-        triggered = []
-        score = 0.0
-        for rule in self.rules.get('rules', []):
-            pattern = rule.get('pattern')
-            if pattern and re.search(pattern, message, re.IGNORECASE):
-                triggered.append(rule.get('name', 'Unknown'))
-                score += rule.get('weight', 10)
-        return {
-            'score': score,
-            'triggered_rules': triggered
-        }
