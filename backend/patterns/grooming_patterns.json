@@ -1,0 +1,34 @@
+[
+  {
+    "id": "asks_age",
+    "category": "age_probing",
+    "severity": "medium",
+    "description": "Directly asking or pushing for the child's age.",
+    "keywords_any": [
+      "how old are you",
+      "age are you",
+      "what age are you",
+      "what's your age",
+      "whats your age",
+      "how many years old",
+      "u 12",
+      "u 13",
+      "you 12",
+      "you 13",
+      "are you 12",
+      "are you 13"
+    ],
+    "regex": [
+      "\\bhow old r u\\b",
+      "\\bhow old are u\\b",
+      "\\b(im|i'm) (1[0-7])\\b",
+      "\\bi am (1[0-7])\\b"
+    ],
+    "examples": [
+      "you’ve got talent fr. how old are you btw?",
+      "how old are you? i’m 14.",
+      "are you 12 or 13?"
+    ]
+  }
+  // ...add all other rules from your list here...
+]

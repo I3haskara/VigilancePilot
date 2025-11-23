@@ -1,0 +1,1 @@
+Archived vigilancepilot-backend directory. All code is now in the root-level backend/ directory.

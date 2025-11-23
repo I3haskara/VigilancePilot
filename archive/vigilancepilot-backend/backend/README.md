@@ -1,0 +1,1 @@
+Archived backend code from vigilancepilot-backend. Use backend/ in project root for all backend operations.

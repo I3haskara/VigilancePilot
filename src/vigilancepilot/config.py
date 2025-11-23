@@ -46,6 +46,10 @@ class Config:
     # Luma Configuration (Optional)
     luma_api_key: Optional[str] = field(default_factory=lambda: os.getenv("LUMA_API_KEY"))
     
+    # AGI Agent API Configuration (Optional)
+    agi_base_url: str = field(default_factory=lambda: os.getenv("AGI_BASE_URL", "https://api.agi.tech/api/v1"))
+    agi_api_key: Optional[str] = field(default_factory=lambda: os.getenv("AGI_API_KEY"))
+    
     # Application Settings
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     debug: bool = field(default_factory=lambda: os.getenv("DEBUG", "false").lower() == "true")

@@ -1,3 +1,5 @@
+# LEGACY BACKEND – not used for VigilancePilot child safety or hackathon demo.
+# Kept only as a reference for the older API testing tool.
 """
 VigilancePilot FastAPI Backend Server
 Main application entry point for API validation and testing orchestration

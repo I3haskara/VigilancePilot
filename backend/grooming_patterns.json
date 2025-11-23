@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "name": "Age probing",
+      "weight": 0.10,
+      "severity": "low",
+      "keywords": ["how old", "age", "what grade"],
+      "regex": ["\\bhow old are (you|u)\\b"]
+    },
+    {
+      "name": "Explicit secrecy / parent bypass",
+      "weight": 0.35,
+      "severity": "high",
+      "keywords": ["don't tell your parents", "our secret"],
+      "regex": ["don'?t tell (your )?parents", "\\bour secret\\b"]
+    }
+    // ... rest of tactics
+  ]
+}
