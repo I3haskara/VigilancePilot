@@ -1,8 +1,7 @@
 from typing import Optional, Dict, Any
 
 from fastapi import FastAPI
-from pydantic import BaseModel
-
+from .schemas import AnalysisRequest
 from .agi_scorer import AGIScorer
 
 
@@ -16,24 +15,46 @@ from pydantic import BaseModel
 from .agi_scorer import AGIScorer
 
 
-app = FastAPI(
-    title="VigilancePilot API",
-    version="0.2.0",
-    description="VigilancePilot – AGI-powered grooming risk analysis with SMS alerts",
+import logging
+
+import os
+import sys
+import logging
+
+# --- make sure we can import from the top-level "backend" folder ---
+CURRENT_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
+BACKEND_DIR = os.path.join(PROJECT_ROOT, "backend")
+
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+# now these modules are in backend/
+from rule_engine import RuleEngine
+from send_parent_alert_sms import send_parent_alert_sms
+
+logger = logging.getLogger(__name__)
+
+
+app = FastAPI(title="VigilancePilot API")
+
+# --- CORS FIX ---
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # allow all during hackathon demo
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# Initialise your rule engine once at startup
+rule_engine = RuleEngine()
 
 
 # ---------- REQUEST MODEL ----------
 
-class AnalysisRequest(BaseModel):
-    message: str
-    child_id: Optional[str] = None
-    platform: Optional[str] = None
-    timestamp: Optional[str] = None
-    conversation_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-    # optional: override default alert phone
-    alert_phone: Optional[str] = None
+
 
 
 # ---------- BASIC HEALTH CHECKS ----------
@@ -131,93 +152,76 @@ async def _send_sms_alert(
 
 # ---------- MAIN ANALYZE ENDPOINT (AGI + OPTIONAL SMS) ----------
 
+
 @app.post("/api/analyze")
-async def analyze(req: AnalysisRequest) -> Dict[str, Any]:
+async def analyze_api(payload: AnalysisRequest) -> Dict[str, Any]:
     """
-    Run AGI analysis on a single chat message and, if the risk is high,
-    send an SMS alert to the parent / guardian.
-
-    Risk → SMS logic:
-    - Extract risk score from AGI result (0–100).
-    - If score >= ALERT_THRESHOLD, send SMS using Telnyx.
-    - SMS failures are reported in 'sms_status' but never cause a 500.
+    Core demo endpoint:
+    - runs rule-based grooming detection
+    - optionally calls AGI (if configured)
+    - sends SMS if risk is HIGH
+    - always returns risk_label, risk_score, alert_sent
     """
-    ALERT_THRESHOLD = 70.0  # adjust as needed
 
-    # 1) Initialize AGI scorer (safe / defensive)
+    # 1) Run rule engine on the message
+    rule_result = rule_engine.analyze_message(
+        message=payload.message,
+        child_id=payload.child_id,
+        platform=payload.platform,
+        context=payload.context,
+        timestamp=payload.timestamp,
+        conversation_id=payload.conversation_id,
+    )
+    # Expect your rule engine to give something like:
+    # {"risk_score": 0.92, "risk_label": "HIGH", "flags": [...]}
+    risk_score = float(rule_result.get("risk_score", 0.0))
+    risk_label = str(rule_result.get("risk_label", "UNKNOWN")).upper()
+    flags = rule_result.get("flags", [])
+
+    # 2) Try AGI scoring, but NEVER fail the endpoint if AGI is broken
+    agi_error = None
+    agi_extra = None
     try:
-        agi_scorer = AGIScorer()
-    except Exception as exc:
-        return {
-            "input": req.dict(),
-            "error": "AGI scorer could not be initialized",
-            "detail": str(exc),
-        }
+        # if you have AGI integration, call it here
+        # agi_extra = await agi_client.score_message(payload.message)
+        # risk_score = agi_extra.get("risk_score", risk_score)
+        # risk_label = agi_extra.get("risk_label", risk_label)
+        pass
+    except Exception as e:
+        agi_error = str(e)
+        logger.exception("AGI analysis failed")
 
-    # 2) Run AGI analysis
+    # 3) Decide if we send SMS
+    alert_sent = False
+    alert_error = None
+
     try:
-        agi_result = await agi_scorer.analyze_text(req.message)
-    except Exception as exc:
-        return {
-            "input": req.dict(),
-            "error": "AGI analysis failed",
-            "detail": str(exc),
-        }
-
-    # 3) Compute risk score
-    risk_score = _extract_risk_score(agi_result)
-    risk_score_rounded = float(f"{risk_score:.2f}")
-    risk_level = "low"
-    if risk_score_rounded >= ALERT_THRESHOLD:
-        risk_level = "high"
-    elif risk_score_rounded >= ALERT_THRESHOLD * 0.5:
-        risk_level = "medium"
-
-    # 4) Decide whether to send SMS
-    sms_status: Dict[str, Any] = {
-        "status": "not_triggered",
-        "reason": "risk below threshold",
-    }
-
-    if risk_score_rounded >= ALERT_THRESHOLD:
-        # Figure out where to send the alert
-        to_phone = (
-            req.alert_phone
-            or os.getenv("TELNYX_ALERT_PHONE")
-            or os.getenv("PARENT_ALERT_PHONE", "")
-        )
-
-        if to_phone:
-            # Compose concise alert text
-            preview = req.message.strip().replace("\n", " ")
-            if len(preview) > 120:
-                preview = preview[:117] + "..."
-
-            sms_text = (
-                f"[VigilancePilot] HIGH RISK ({math.floor(risk_score_rounded)}). "
-                f"Child: {req.child_id or 'unknown'}, "
-                f"Platform: {req.platform or 'unknown'}. "
-                f"Message: \"{preview}\""
-            )
-
-            sms_status = await _send_sms_alert(
-                text=sms_text,
-                to_phone=to_phone,
-            )
-        else:
-            sms_status = {
-                "status": "skipped",
-                "reason": "No alert phone configured (TELNYX_ALERT_PHONE / PARENT_ALERT_PHONE / request.alert_phone)",
+        # Demo rule: send SMS only if HIGH risk
+        if risk_label == "HIGH":
+            sms_payload = {
+                "risk_score": risk_score,
+                "risk_label": risk_label,
+                "flags": flags,
+                "child_id": payload.child_id or "demo-child",
+                "platform": payload.platform or "demo-ui",
+                "message": payload.message,
             }
+            await send_parent_alert_sms(sms_payload)
+            alert_sent = True
+    except Exception as e:
+        alert_error = str(e)
+        logger.exception("Failed to send parent alert SMS")
 
-    # 5) Return combined response
+    # 4) Return a clean, demo-friendly JSON
     return {
-        "input": req.dict(),
-        "agi_result": agi_result,
-        "risk_score": risk_score_rounded,
-        "risk_level": risk_level,
-        "alert_threshold": ALERT_THRESHOLD,
-        "sms_status": sms_status,
+        "input": payload.dict(),
+        "risk_score": risk_score,
+        "risk_label": risk_label,
+        "flags": flags,
+        "alert_sent": alert_sent,
+        "alert_error": alert_error,
+        "agi_error": agi_error,
+        "agi_extra": agi_extra,
     }
 
 

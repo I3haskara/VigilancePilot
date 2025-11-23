@@ -199,83 +199,83 @@ def demo_page():
         const sms = document.getElementById('sms');
         const json = document.getElementById('json');
 
-        panel.style.display = 'block';
+        return (
+          """
+      <!DOCTYPE html>
+      <html lang='en'>
+      <head>
+        <meta charset='UTF-8'>
+        <title>VigilancePilot – Live Risk Demo</title>
+        <style>
+        body { background:#020617; color:#e5e7eb; font-family:system-ui, sans-serif; margin:0; padding:40px; }
+        h1 { font-size:28px; margin-bottom:4px; }
+        h2 { font-size:18px; color:#9ca3af; margin-top:0; margin-bottom:24px; }
+        textarea { width:100%; max-width:900px; height:160px; background:#020617; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:12px; resize:vertical; }
+        button { margin-top:16px; padding:10px 20px; border:none; border-radius:999px; background:#2563eb; color:white; font-weight:600; cursor:pointer; }
+        .panel { margin-top:24px; max-width:900px; padding:16px 20px; border-radius:12px; background:#020617; border:1px solid #1f2937; box-shadow:0 0 30px rgba(15,23,42,0.8); }
+        .badge { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+        .badge-low { background:rgba(16,185,129,0.15); color:#6ee7b7; }
+        .badge-high { background:rgba(239,68,68,0.2); color:#fecaca; }
+        pre { margin-top:16px; padding:12px; background:#020617; border-radius:8px; border:1px solid #374151; overflow-x:auto; font-size:12px; }
+        </style>
+      </head>
+      <body>
+        <h1>VigilancePilot – Live Grooming Risk Demo</h1>
+        <h2>Paste a chat conversation and see how the engine flags grooming risk.</h2>
 
-        const label = (data.risk_label || 'UNKNOWN').toUpperCase();
-        const score = typeof data.risk_score === 'number' ? Math.round(data.risk_score * 100) : null;
-
-        let badgeClass = 'badge badge-low';
-        if (label === 'HIGH') badgeClass = 'badge badge-high';
-
-        riskLabel.innerHTML = '<span class="' + badgeClass + '">' + label + ' RISK' + (score !== null ? ' • ' + score + '%' : '') + '</span>';
-        explanation.textContent = data.explanation || '';
-        sms.textContent = data.alert_sent
-          ? 'Parent alert SMS: SENT to registered guardian phone.'
-          : 'Parent alert SMS: Not sent (below threshold or Telnyx misconfigured).';
-
-        json.textContent = JSON.stringify(data, null, 2);
-
-        if (data.alert_sent) {
-          alert('⚠ Parent Alert Triggered\nA high-risk pattern was detected and an SMS was sent to the guardian.');
-        }
-        } catch (e) {
-        alert('Error calling API: ' + e);
-        } finally {
-        btn.disabled = false;
-        btn.textContent = 'Run Safety Check';
-        }
-      }
-      </script>
-    </body>
-    </html>
-        const explanation = document.getElementById('explanation');
-
-    @app.post("/api/analyze", response_model=AnalysisResponse)
-    async def analyze(req: AnalysisRequest) -> AnalysisResponse:
-      text = req.message.lower()
-
-      high_patterns = [
-        "don't tell your parents",
-        "dont tell your parents",
-        "this is our little secret",
-        "send me a picture",
-        "send me a pic",
-        "nobody has to know",
-        "when you are alone",
-      ]
-
-      high = any(p in text for p in high_patterns)
-
-      if high:
-        risk_score = 0.95
-        risk_label = "HIGH"
-        explanation = (
-          "High-risk grooming pattern detected: secrecy, boundary pushing, or requests for images. "
-          "In a production system this triggers a real SMS alert to the guardian."
+        <textarea id='chat'></textarea>
+        <br/>
+        <button id='runBtn' onclick='runDemo()'>Run Safety Check</button>
+        <div id='result' class='panel' style='display:none;'>
+          <div id='riskLabel'></div>
+          <div id='explanation' style='margin-top:8px;'></div>
+          <div id='sms' style='margin-top:8px;'></div>
+          <pre id='json' style='margin-top:12px;'></pre>
+        </div>
+        <script>
+          async function runDemo() {
+            const btn = document.getElementById('runBtn');
+            btn.disabled = true;
+            btn.textContent = 'Analyzing...';
+            const text = document.getElementById('chat').value;
+            try {
+              const res = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+              });
+              const data = await res.json();
+              const panel = document.getElementById('result');
+              const riskLabel = document.getElementById('riskLabel');
+              const explanation = document.getElementById('explanation');
+              const sms = document.getElementById('sms');
+              const json = document.getElementById('json');
+              panel.style.display = 'block';
+              const label = (data.risk_label || 'UNKNOWN').toUpperCase();
+              const score = typeof data.risk_score === 'number' ? Math.round(data.risk_score * 100) : null;
+              let badgeClass = 'badge badge-low';
+              if (label === 'HIGH') badgeClass = 'badge badge-high';
+              riskLabel.innerHTML = '<span class="' + badgeClass + '">' + label + ' RISK' + (score !== null ? ' • ' + score + '%' : '') + '</span>';
+              explanation.textContent = data.explanation || '';
+              sms.textContent = data.alert_sent
+                ? 'Parent alert SMS: SENT to registered guardian phone.'
+                : 'Parent alert SMS: Not sent (below threshold or Telnyx misconfigured).';
+              json.textContent = JSON.stringify(data, null, 2);
+              if (data.alert_sent) {
+                alert('⚠ Parent Alert Triggered\nA high-risk pattern was detected and an SMS was sent to the guardian.');
+              }
+            } catch (e) {
+              alert('Error calling API: ' + e);
+            } finally {
+              btn.disabled = false;
+              btn.textContent = 'Run Safety Check';
+            }
+          }
+        </script>
+      </body>
+      </html>
+          """
         )
-      else:
-        risk_score = 0.10
-        risk_label = "LOW"
-        explanation = (
-          "No strong grooming indicators detected in this short sample. "
-          "This demo uses a simplified ruleset for the hackathon."
-        )
-
-      alert_sent = False
-      sms_error: str | None = None
-
-      # Only try SMS on HIGH risk
-      if risk_label == "HIGH":
-        summary = f"[VigilancePilot] HIGH grooming risk detected. Score={risk_score:.2f}. Snippet: {req.message[:140]}"
-        try:
-          alert_sent = await send_parent_sms(summary)
-        except Exception as e:
-          sms_error = str(e)
-
-      return AnalysisResponse(
-        input=req.message,
-        risk_score=risk_score,
-        risk_label=risk_label,
         alert_sent=alert_sent,
         explanation=explanation,
         sms_error=sms_error,
@@ -293,7 +293,7 @@ def demo_page():
 
         riskLabel.innerHTML = '<span class="' + badgeClass + '">' + label + ' RISK' + (score !== null ? ' • ' + score + '%' : '') + '</span>';
         explanation.textContent = data.explanation || '';
-        sms.textContent = data.alert_sent ? 'Parent alert SMS: TRIGGERED (simulated for demo).' : 'Parent alert SMS: Not sent.';
+        sms.textContent = data.alert_sent ? 'Parent alert SMS: SENT to registered guardian phone.' : 'Parent alert SMS: Not sent (below threshold or Telnyx misconfigured).';
 
         json.textContent = JSON.stringify(data, null, 2);
       } catch (e) {
